@@ -1,0 +1,13 @@
+# OS / editor 
+.DS_Store
+*.swp
+# build / dist
+dist/
+build/
+# secrets /local config
+.env
+config/local.yml
+# node_modules
+node_modules/
+# other
+secrets/
