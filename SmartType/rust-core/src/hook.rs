@@ -207,32 +207,53 @@ impl InputHook {
         let mut kb_guard = kb_lock.lock().await;
         
         if kb_guard.is_none() {
-            match VirtualKeyboard::new() {
-                Ok(kb) => {
+            // Run blocking keyboard creation in a separate thread
+            match tokio::task::spawn_blocking(|| VirtualKeyboard::new()).await {
+                Ok(Ok(kb)) => {
                     log::info!("Virtual keyboard created successfully");
                     *kb_guard = Some(kb);
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     log::error!("Failed to create virtual keyboard: {}. Text replacement disabled.", e);
+                    return;
+                }
+                Err(e) => {
+                    log::error!("Failed to spawn blocking task: {}", e);
                     return;
                 }
             }
         }
         
         if let Some(keyboard) = kb_guard.as_mut() {
-            // Delete old text (backspace for each character)
-            if let Err(e) = keyboard.press_backspace(old_text.chars().count()) {
-                log::error!("Failed to send backspace: {}", e);
-                return;
-            }
+            let old_text_len = old_text.chars().count();
+            let new_text_owned = new_text.to_string();
             
-            // Type new text
-            if let Err(e) = keyboard.type_text(new_text) {
-                log::error!("Failed to type new text: {}", e);
-                return;
-            }
+            // Run blocking keyboard operations in a separate thread
+            // We need to temporarily take ownership to move into the closure
+            let mut kb_temp = kb_guard.take().unwrap();
             
-            log::info!("Successfully replaced text");
+            let result = tokio::task::spawn_blocking(move || {
+                // Delete old text (backspace for each character)
+                kb_temp.press_backspace(old_text_len)?;
+                
+                // Type new text
+                kb_temp.type_text(&new_text_owned)?;
+                
+                Ok::<_, anyhow::Error>(kb_temp)
+            }).await;
+            
+            match result {
+                Ok(Ok(kb)) => {
+                    *kb_guard = Some(kb);
+                    log::info!("Successfully replaced text");
+                }
+                Ok(Err(e)) => {
+                    log::error!("Failed to perform text replacement: {}", e);
+                }
+                Err(e) => {
+                    log::error!("Failed to spawn blocking task: {}", e);
+                }
+            }
         }
     }
 
