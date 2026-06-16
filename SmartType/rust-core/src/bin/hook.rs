@@ -1,42 +1,32 @@
-use smarttype_core::{SmartType, hook::InputHook};
+use smarttype_core::{AutocorrectEngine, Config, WordCompleter, hook::InputHook};
 use anyhow::Result;
-use log::{info, error};
-use std::sync::Arc;
+use log::{error, info};
+use std::sync::{Arc, RwLock};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logger
     env_logger::init();
+    info!("SmartType hook starting...");
 
-    info!("Starting SmartType input hook...");
+    let config = Config::load().unwrap_or_default();
+    let engine = Arc::new(RwLock::new(AutocorrectEngine::new(config)?));
+    info!("Autocorrect engine ready");
 
-    // Create SmartType instance
-    let smarttype = Arc::new(SmartType::new().await?);
-    info!("SmartType engine initialized");
+    let completer = Arc::new(RwLock::new(WordCompleter::new()));
+    info!("Autocomplete engine ready");
 
-    // Create input hook
-    let mut hook = InputHook::new()?;
-    info!("Input hook created");
+    let mut hook = InputHook::new(Arc::clone(&completer))?;
 
-    // Initialize keyboard devices
-    hook.init().await?;
-    info!("Keyboard devices found and initialized");
-
-    // Set correction callback
-    let smarttype_clone = Arc::clone(&smarttype);
-    hook.set_callback(move |word| {
-        let st = Arc::clone(&smarttype_clone);
-        tokio::runtime::Handle::current().block_on(async move {
-            st.correct_word(&word).await.unwrap_or(None)
-        })
+    hook.set_autocorrect(move |word: &str| -> Option<String> {
+        engine.read().unwrap().correct_word(word)
     });
 
-    info!("Starting keyboard event listener...");
-    info!("SmartType is now active!");
+    hook.init().await?;
+    info!("Keyboard devices initialised");
+    info!("SmartType active — suggestions in popup bar. Tab = first, 1-5 = nth, backspace after space to re-edit.");
 
-    // Start listening (this blocks)
     if let Err(e) = hook.start().await {
-        error!("Error in input hook: {}", e);
+        error!("Hook error: {}", e);
         return Err(e);
     }
 

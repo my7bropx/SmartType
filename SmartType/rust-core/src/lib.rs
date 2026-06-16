@@ -3,11 +3,13 @@ pub mod dictionary;
 pub mod smart_punctuation;
 pub mod config;
 pub mod hook;
+pub mod autocomplete;
 
 pub use engine::AutocorrectEngine;
 pub use dictionary::Dictionary;
 pub use smart_punctuation::SmartPunctuation;
 pub use config::Config;
+pub use autocomplete::WordCompleter;
 
 use anyhow::Result;
 use std::sync::Arc;

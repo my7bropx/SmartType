@@ -2,24 +2,13 @@ use regex::Regex;
 
 /// Smart punctuation processor
 pub struct SmartPunctuation {
-    double_quote_state: bool,
-    single_quote_state: bool,
-    double_quote_regex: Regex,
-    single_quote_regex: Regex,
-    apostrophe_regex: Regex,
     dash_regex: Regex,
     ellipsis_regex: Regex,
 }
 
 impl SmartPunctuation {
-    /// Create new smart punctuation processor
     pub fn new() -> Self {
         Self {
-            double_quote_state: false,
-            single_quote_state: false,
-            double_quote_regex: Regex::new(r#""([^"]*)""#).unwrap(),
-            single_quote_regex: Regex::new(r"'([^']*)'").unwrap(),
-            apostrophe_regex: Regex::new(r"\b([a-zA-Z]+)'([a-zA-Z]+)\b").unwrap(),
             dash_regex: Regex::new(r" -- ").unwrap(),
             ellipsis_regex: Regex::new(r"\.\.\.").unwrap(),
         }
@@ -53,9 +42,9 @@ impl SmartPunctuation {
         for ch in text.chars() {
             if ch == '"' {
                 if in_quote {
-                    result.push('"'); // Closing quote
+                    result.push('\u{201D}'); // RIGHT DOUBLE QUOTATION MARK
                 } else {
-                    result.push('"'); // Opening quote
+                    result.push('\u{201C}'); // LEFT DOUBLE QUOTATION MARK
                 }
                 in_quote = !in_quote;
             } else {

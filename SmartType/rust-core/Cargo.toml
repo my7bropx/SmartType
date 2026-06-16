@@ -3,7 +3,7 @@ name = "smarttype-core"
 version = "1.0.0"
 edition = "2021"
 authors = ["SmartType Contributors"]
-description = "High-performance autocorrect engine for Linux"
+description = "High-performance autocorrect + autocomplete engine for Linux"
 license = "MIT"
 
 [lib]
@@ -14,43 +14,39 @@ crate-type = ["cdylib", "rlib"]
 name = "smarttype-hook"
 path = "src/bin/hook.rs"
 
+[[bin]]
+name = "smarttype-popup"
+path = "src/bin/popup.rs"
+
 [dependencies]
-# Core functionality
-serde = { version = "1.0", features = ["derive"] }
+# Serialisation / config
+serde      = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
-toml = "0.8"
+directories = "5.0"
 
 # String processing
 regex = "1.10"
-unicode-segmentation = "1.11"
-phf = { version = "0.11", features = ["macros"] }
+phf   = { version = "0.11", features = ["macros"] }
 
-# Input handling
-evdev = "0.12"
-uinput = "0.1"
-nix = { version = "0.27", features = ["user", "process"] }
-libc = "0.2"
+# Input / output
+evdev = { version = "0.12", features = ["tokio"] }
+libc  = "0.2"
 
-# Async and concurrency
-tokio = { version = "1.35", features = ["full"] }
-tokio-stream = "0.1"
-crossbeam = "0.8"
+# Async
+tokio   = { version = "1.35", features = ["full"] }
+futures = "0.3"
+
+# X11 overlay (pure Rust, no Python)
+x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
 
 # Logging
-log = "0.4"
+log        = "0.4"
 env_logger = "0.11"
 
 # Error handling
-anyhow = "1.0"
+anyhow    = "1.0"
 thiserror = "1.0"
-
-# Configuration
-config = "0.13"
-directories = "5.0"
-
-# IPC
-interprocess = "1.2"
 
 [profile.release]
 opt-level = 3

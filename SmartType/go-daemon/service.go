@@ -15,15 +15,16 @@ import (
 
 // Service manages the SmartType daemon
 type Service struct {
-	config       *Config
-	configPath   string
-	hookProcess  *os.Process
-	watcher      *fsnotify.Watcher
-	stopChan     chan struct{}
-	wg           sync.WaitGroup
-	mu           sync.RWMutex
-	stats        Stats
-	startTime    time.Time
+	config        *Config
+	configPath    string
+	hookProcess   *os.Process
+	popupProcess  *os.Process
+	watcher       *fsnotify.Watcher
+	stopChan      chan struct{}
+	wg            sync.WaitGroup
+	mu            sync.RWMutex
+	stats         Stats
+	startTime     time.Time
 }
 
 // Config represents the SmartType configuration
@@ -78,6 +79,11 @@ func (s *Service) Start() error {
 		return fmt.Errorf("failed to setup config watcher: %w", err)
 	}
 
+	// Start the popup overlay (best-effort; hook still runs without it)
+	if err := s.startPopup(); err != nil {
+		log.Printf("Warning: could not start popup: %v", err)
+	}
+
 	// Start the input hook process
 	if err := s.startHook(); err != nil {
 		return fmt.Errorf("failed to start input hook: %w", err)
@@ -97,7 +103,11 @@ func (s *Service) Stop() {
 
 	close(s.stopChan)
 
-	// Stop the hook process
+	// Stop child processes
+	if s.popupProcess != nil {
+		s.popupProcess.Signal(os.Interrupt)
+		s.popupProcess.Wait()
+	}
 	if s.hookProcess != nil {
 		s.hookProcess.Signal(os.Interrupt)
 		s.hookProcess.Wait()
@@ -120,12 +130,19 @@ func (s *Service) Reload() error {
 		return fmt.Errorf("failed to reload config: %w", err)
 	}
 
-	// Restart hook process with new config
+	// Restart popup and hook with new config
+	if s.popupProcess != nil {
+		s.popupProcess.Signal(os.Interrupt)
+		s.popupProcess.Wait()
+	}
 	if s.hookProcess != nil {
 		s.hookProcess.Signal(os.Interrupt)
 		s.hookProcess.Wait()
 	}
 
+	if err := s.startPopup(); err != nil {
+		log.Printf("Warning: could not restart popup: %v", err)
+	}
 	if err := s.startHook(); err != nil {
 		return fmt.Errorf("failed to restart hook: %w", err)
 	}
@@ -250,6 +267,28 @@ func (s *Service) watchConfig() {
 			return
 		}
 	}
+}
+
+// startPopup starts the X11 suggestion overlay
+func (s *Service) startPopup() error {
+	popupPath := "/usr/local/bin/smarttype-popup"
+	if _, err := os.Stat(popupPath); os.IsNotExist(err) {
+		popupPath = "./target/release/smarttype-popup"
+	}
+	if _, err := os.Stat(popupPath); os.IsNotExist(err) {
+		return fmt.Errorf("smarttype-popup binary not found")
+	}
+
+	cmd := exec.Command(popupPath)
+	cmd.Env = append(os.Environ(), "RUST_LOG=warn")
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start popup process: %w", err)
+	}
+
+	s.popupProcess = cmd.Process
+	log.Printf("Popup started (PID: %d)", s.popupProcess.Pid)
+	return nil
 }
 
 // startHook starts the input hook process
