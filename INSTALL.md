@@ -1,324 +1,131 @@
-# SmartType Installation Guide
+# Installation
 
-Complete installation guide for SmartType on Linux systems.
+## Prerequisites
 
-## System Requirements
+| Tool | Minimum | Notes |
+|------|---------|-------|
+| Linux kernel | 4.0+ | evdev + uinput required |
+| X11 | any | Wayland not yet supported |
+| Rust / cargo | 1.70+ | via rustup |
+| Go | 1.21+ | via apt or go.dev |
 
-### Minimum Requirements
-- Linux kernel 4.0+
-- 512 MB RAM
-- 100 MB disk space
-- X11 or Wayland display server
-
-### Tested Distributions
-- Kali Linux 2023.x+
-- Ubuntu 22.04+
-- Debian 12+
-- Arch Linux
-- Fedora 38+
-
-## Quick Installation
-
-### One-Line Install (Recommended)
+## Step 1 — Install build dependencies
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/smarttype/smarttype/main/scripts/quick-install.sh | sudo bash
+./scripts/install-deps.sh
 ```
 
-### Manual Installation
+This installs Rust (via rustup if absent), checks for Go, installs system libraries (`libx11-dev`, `libxrandr-dev`, `libxtst-dev`), and adds your user to the `input` group.
 
-#### Step 1: Install Dependencies
+For Kali / Debian / Ubuntu only. On other distros install the equivalents manually:
 
 ```bash
-# Clone repository
-git clone https://github.com/yourusername/smarttype
-cd smarttype
+# Arch
+sudo pacman -S rust go libx11 libxrandr libxtst
 
-# Install dependencies
-sudo ./scripts/install-deps.sh
+# Fedora
+sudo dnf install rust cargo golang libX11-devel libXrandr-devel libXtst-devel
 ```
 
-This script will automatically detect your distribution and install:
-- Rust (cargo, rustc)
-- Go 1.21+
-- Python 3.9+
-- PyQt5
-- Development libraries (libevdev, libudev, libx11, etc.)
-
-#### Step 2: Build SmartType
+## Step 2 — Build and install
 
 ```bash
-# Build all components
-./scripts/build-all.sh
-```
-
-This builds:
-1. Rust core engine (autocorrect + input hook)
-2. Go daemon service
-3. Python GUI configuration tool
-
-Build time: ~5-10 minutes on typical hardware
-
-#### Step 3: Install System-Wide
-
-```bash
-# Install SmartType
 sudo ./scripts/install.sh
 ```
 
-This installs:
-- Binaries to `/usr/local/bin/`
-- Systemd service file
-- Udev rules for input device access
-- Default configuration
+This script:
+1. Runs `build-all.sh` (cargo release build + go build)
+2. Copies binaries to `/usr/local/bin/`
+3. Writes `/etc/udev/rules.d/99-smarttype.rules` (input device permissions)
+4. Installs a systemd user unit at `~/.config/systemd/user/smarttype.service`
+5. Enables the unit (`systemctl --user enable smarttype`)
 
-#### Step 4: Configure Permissions
+## Step 3 — Re-login
 
-**Important:** Log out and log back in after installation for group permissions to take effect.
+The installer adds your user to the `input` group. This only takes effect after logging out and back in (or running `newgrp input` in the current shell).
 
 ```bash
-# Log out and back in, then verify group membership
+# Verify group membership
 groups | grep input
 ```
 
-#### Step 5: Start SmartType
+## Step 4 — Start
 
 ```bash
-# Enable and start service
-systemctl --user enable --now smarttype
-
-# Check status
+systemctl --user start smarttype
 systemctl --user status smarttype
 ```
 
-## Distribution-Specific Notes
+The service auto-starts on every login because the unit was enabled in step 2.
 
-### Kali Linux
-
-Kali Linux is fully supported and tested. No special configuration needed.
+## Build only (no install)
 
 ```bash
-sudo apt update
-sudo apt install -y build-essential cargo rustc golang python3-pyqt5
+./scripts/build-all.sh
 ```
 
-### Ubuntu/Debian
+Produces:
+- `rust-core/target/release/smarttype-hook`
+- `rust-core/target/release/smarttype-popup`
+- `go-daemon/smarttype-daemon`
+
+## Manual install (skip sudo)
+
+If you prefer to install to a user-writable location:
 
 ```bash
-# Install additional packages if needed
-sudo apt install libevdev-dev libudev-dev libx11-dev
+./scripts/build-all.sh
+
+mkdir -p ~/.local/bin
+cp rust-core/target/release/smarttype-hook   ~/.local/bin/
+cp rust-core/target/release/smarttype-popup  ~/.local/bin/
+cp go-daemon/smarttype-daemon                ~/.local/bin/
 ```
 
-### Arch Linux
+Then edit `~/.config/systemd/user/smarttype.service` to point `ExecStart` to `~/.local/bin/smarttype-daemon`.
+
+## Uninstall
 
 ```bash
-# Install from AUR (coming soon)
-yay -S smarttype
+systemctl --user stop smarttype
+systemctl --user disable smarttype
 
-# Or build manually
-sudo pacman -S base-devel rust go python python-pyqt5
-```
+sudo rm -f /usr/local/bin/smarttype-hook \
+           /usr/local/bin/smarttype-popup \
+           /usr/local/bin/smarttype-daemon
 
-### Fedora
+sudo rm -f /etc/udev/rules.d/99-smarttype.rules
+sudo udevadm control --reload-rules
 
-```bash
-sudo dnf install gcc rust cargo golang python3-qt5
-```
+rm -f ~/.config/systemd/user/smarttype.service
+systemctl --user daemon-reload
 
-## Post-Installation Configuration
-
-### GUI Configuration
-
-Launch the configuration GUI:
-
-```bash
-smarttype-config
-```
-
-Features:
-- Enable/disable SmartType
-- Configure autocorrect and smart punctuation
-- Per-application settings
-- Custom typo corrections
-- Statistics and monitoring
-
-### Command-Line Interface
-
-```bash
-# Start service
-smarttype-cli start
-
-# Stop service
-smarttype-cli stop
-
-# Check status
-smarttype-cli status
-
-# Test autocorrect
-smarttype-cli test "teh quick borwn fox"
-
-# Open GUI
-smarttype-cli config
-```
-
-### Manual Configuration
-
-Edit `~/.config/smarttype/config.yaml`:
-
-```yaml
-enabled: true
-smart_punctuation: true
-autocorrect: true
-min_word_length: 2
-
-applications:
-  firefox:
-    enabled: true
-    smart_quotes: true
-  qterminal:
-    enabled: true
-    smart_quotes: false  # Disable in terminal
-
-custom_typos:
-  mytypo: mycorrection
+# Optionally remove learned words
+rm -rf ~/.local/share/smarttype
 ```
 
 ## Troubleshooting
 
-### Service Won't Start
+**Service fails to start — "No keyboard devices found"**
 
-**Check logs:**
+Your user is not in the `input` group yet. Log out and back in, or:
+```bash
+newgrp input
+systemctl --user restart smarttype
+```
+
+**Popup does not appear**
+
+Check that `DISPLAY` is set:
+```bash
+echo $DISPLAY          # should print :0 or similar
+systemctl --user restart smarttype
+```
+
+**Checking logs**
+
 ```bash
 journalctl --user -u smarttype -f
+# or run the daemon directly to see output:
+RUST_LOG=info smarttype-daemon
 ```
-
-**Verify installation:**
-```bash
-which smarttype-daemon
-which smarttype-hook
-```
-
-**Check permissions:**
-```bash
-groups | grep input
-getcap /usr/local/bin/smarttype-hook
-```
-
-### Not Working in Specific Applications
-
-**Check application name:**
-```bash
-xdotool getactivewindow getwindowname
-```
-
-**Add application to config:**
-```yaml
-applications:
-  myapp:
-    enabled: true
-    autocorrect: true
-```
-
-### High CPU Usage
-
-**Reduce dictionary size:**
-Edit config to increase `min_word_length` to 3 or 4.
-
-**Disable for specific apps:**
-Set `enabled: false` for resource-intensive applications.
-
-### Permission Denied Errors
-
-**Add user to input group:**
-```bash
-sudo usermod -a -G input $USER
-# Log out and back in
-```
-
-**Set capabilities:**
-```bash
-sudo setcap cap_dac_override,cap_sys_admin+ep /usr/local/bin/smarttype-hook
-```
-
-## Uninstallation
-
-To completely remove SmartType:
-
-```bash
-# Stop and disable service
-systemctl --user stop smarttype
-systemctl --user disable smarttype
-
-# Remove binaries
-sudo rm /usr/local/bin/smarttype-*
-
-# Remove systemd service
-sudo rm /usr/lib/systemd/user/smarttype.service
-sudo systemctl --user daemon-reload
-
-# Remove configuration
-rm -rf ~/.config/smarttype
-
-# Remove udev rules
-sudo rm /etc/udev/rules.d/99-smarttype.rules
-sudo udevadm control --reload-rules
-```
-
-## Advanced Installation
-
-### Building with Custom Features
-
-```bash
-# Build with specific features
-cd rust-core
-cargo build --release --features "extra-dictionaries,debug-mode"
-```
-
-### Installing to Custom Location
-
-```bash
-# Set custom prefix
-PREFIX=/opt/smarttype sudo ./scripts/install.sh
-```
-
-### Running Without systemd
-
-```bash
-# Start daemon manually
-smarttype-daemon -d
-
-# Or run in foreground
-smarttype-daemon
-```
-
-## Getting Help
-
-- Documentation: https://smarttype.dev/docs
-- Issues: https://github.com/yourusername/smarttype/issues
-- Discord: https://discord.gg/smarttype
-- Email: support@smarttype.dev
-
-## Security Considerations
-
-SmartType requires elevated privileges to access input devices:
-
-1. **Input Group:** User is added to `input` group for device access
-2. **Capabilities:** `smarttype-hook` has CAP_DAC_OVERRIDE capability
-3. **Local Only:** All processing happens locally, no network access
-4. **Open Source:** Full source code available for audit
-
-SmartType does NOT:
-- Send data to external servers
-- Log keystrokes to disk
-- Require root access during normal operation
-
-## Next Steps
-
-After installation:
-
-1. **Configure Applications:** Add per-app rules via GUI
-2. **Add Custom Typos:** Add your common typos
-3. **Test Thoroughly:** Test in your daily applications
-4. **Report Issues:** Help improve SmartType by reporting bugs
-
-Enjoy system-wide autocorrect on Linux!

@@ -1,420 +1,157 @@
-# SmartType Project Structure
+# Project Structure
 
-Complete overview of the SmartType codebase architecture.
-
-## Directory Structure
+## Directory layout
 
 ```
 SmartType/
-├── rust-core/              # Rust autocorrect engine (core)
-│   ├── src/
-│   │   ├── lib.rs          # Main library interface
-│   │   ├── engine.rs       # Autocorrect engine
-│   │   ├── dictionary.rs   # 2000+ typo dictionary
-│   │   ├── smart_punctuation.rs  # Smart quotes, dashes, etc.
-│   │   ├── config.rs       # Configuration management
-│   │   ├── hook.rs         # Input interception (evdev)
-│   │   └── bin/
-│   │       └── hook.rs     # Binary entry point
-│   └── Cargo.toml          # Rust dependencies
+├── rust-core/                  Rust workspace (library + 2 binaries)
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs              Public API re-exports
+│       ├── bin/
+│       │   ├── hook.rs         smarttype-hook entry point
+│       │   └── popup.rs        smarttype-popup entry point
+│       ├── hook.rs             Keyboard reader + word-state machine
+│       ├── autocomplete.rs     Prefix lookup + edit-distance suggester
+│       ├── engine.rs           Rule-based autocorrect engine
+│       ├── dictionary.rs       Built-in typo dictionary
+│       ├── smart_punctuation.rs Curly quotes, em-dash, ellipsis
+│       └── config.rs           YAML config loader
 │
-├── go-daemon/              # Go daemon service
-│   ├── main.go             # Entry point & CLI
-│   ├── service.go          # Service management
-│   └── go.mod              # Go dependencies
+├── go-daemon/                  Go process supervisor
+│   ├── main.go                 Daemonisation, signal handling
+│   └── service.go              Binary discovery, spawn, auto-restart
 │
-├── python-gui/             # Qt-based configuration GUI
-│   ├── main.py             # GUI application
-│   └── requirements.txt    # Python dependencies
+├── scripts/
+│   ├── install-deps.sh         Install Rust, Go, system libs, input group
+│   ├── build-all.sh            cargo build --release + go build
+│   └── install.sh              Build + /usr/local/bin + udev + systemd unit
 │
-├── scripts/                # Installation & build scripts
-│   ├── install-deps.sh     # Dependency installer
-│   ├── build-all.sh        # Build script
-│   └── install.sh          # System installer
-│
-├── docs/                   # Documentation
-│   ├── README.md           # Main documentation
-│   ├── INSTALL.md          # Installation guide
-│   ├── USAGE.md            # Usage guide
-│   ├── QUICKSTART.md       # Quick start guide
-│   └── PROJECT_STRUCTURE.md # This file
-│
-├── LICENSE                 # MIT License
-└── .gitignore             # Git ignore rules
+├── README.md
+├── INSTALL.md
+├── QUICKSTART.md
+├── USAGE.md
+├── PROJECT_STRUCTURE.md
+└── LICENSE
 ```
 
-## Component Overview
+## Binaries produced
 
-### 1. Rust Core (`rust-core/`)
+| Binary | Source | Purpose |
+|--------|--------|---------|
+| `smarttype-hook` | `rust-core/src/bin/hook.rs` | Reads keyboard, drives suggestions + correction |
+| `smarttype-popup` | `rust-core/src/bin/popup.rs` | X11 suggestion bar |
+| `smarttype-daemon` | `go-daemon/` | Spawns + supervises the two Rust binaries |
 
-High-performance autocorrect engine written in Rust.
-
-**Key Files:**
-- `lib.rs` - Public API and main library interface
-- `engine.rs` - Core autocorrect logic with case preservation
-- `dictionary.rs` - Built-in dictionary with 2000+ common typos
-- `smart_punctuation.rs` - Smart quote and punctuation conversion
-- `config.rs` - YAML-based configuration system
-- `hook.rs` - System-wide input interception using evdev
-- `bin/hook.rs` - Binary for running input hook
-
-**Technologies:**
-- Rust 1.70+
-- evdev for input capture
-- tokio for async operations
-- regex for pattern matching
-- serde/yaml for config
-
-**Build Output:**
-- `libsmarttype_core.so` - Shared library
-- `smarttype-hook` - Input hook binary
-
-### 2. Go Daemon (`go-daemon/`)
-
-Background service that coordinates autocorrect operations.
-
-**Key Files:**
-- `main.go` - Entry point, signal handling, daemonization
-- `service.go` - Service lifecycle, config watching, process management
-
-**Technologies:**
-- Go 1.21+
-- fsnotify for file watching
-- gopkg.in/yaml for config
-- sevlyar/go-daemon for daemonization
-
-**Features:**
-- Automatic config reload on changes
-- Process supervision of input hook
-- Signal handling (SIGTERM, SIGHUP)
-- Systemd integration
-
-**Build Output:**
-- `smarttype-daemon` - Single binary executable
-
-### 3. Python GUI (`python-gui/`)
-
-Qt-based configuration interface.
-
-**Key Files:**
-- `main.py` - Complete GUI application (800+ lines)
-
-**Technologies:**
-- Python 3.9+
-- PyQt5 for UI
-- PyYAML for config
-- psutil for process management
-
-**Features:**
-- Tabbed interface (General, Applications, Custom Typos, Statistics)
-- System tray integration
-- Real-time service control
-- Live configuration editing
-- Per-application settings
-- Custom typo management
-
-### 4. Installation Scripts (`scripts/`)
-
-Automated installation and build scripts.
-
-**Files:**
-- `install-deps.sh` - Multi-distro dependency installer
-- `build-all.sh` - Builds all components in correct order
-- `install.sh` - System-wide installation with permissions
-
-**Supported Distributions:**
-- Debian/Ubuntu/Kali
-- Arch/Manjaro
-- Fedora/RHEL/CentOS
-
-## Data Flow
+## Data flow
 
 ```
-User Types
-    ↓
-[evdev Input Hook] (Rust)
-    ↓
-[Word Buffer]
-    ↓
-[Autocorrect Engine] (Rust)
-    ├→ Dictionary Lookup
-    ├→ Case Preservation
-    └→ Smart Punctuation
-    ↓
-[Correction Applied]
-    ↓
-Output to Application
+User types a key
+      │
+      ▼
+evdev /dev/input/eventN  (kernel input subsystem)
+      │
+      ▼
+smarttype-hook
+  ├─ Accumulates characters into word_buffer
+  ├─ On each keypress: calls WordCompleter::suggest(prefix)
+  │       ├─ BTreeMap range scan for prefix matches
+  │       └─ Norvig edit-1 for near-misses when < 5 results
+  ├─ On Space: calls AutocorrectEngine::correct_word(word)
+  │       ├─ Checks custom_typos map
+  │       └─ Checks built-in dictionary
+  └─ Sends suggestion list over Unix socket → smarttype-popup
+            │
+            ▼
+    smarttype-popup
+      ├─ XQueryPointer → cursor (x, y)
+      ├─ Repositions window above cursor
+      └─ Draws Catppuccin-themed chip row
+
+When user presses Tab / 1-5:
+  hook → VirtualKeyboard (raw uinput ioctls)
+    ├─ KEY_BACKSPACE × N  (erase typed prefix or pending word + space)
+    └─ KEY_x presses      (type the accepted suggestion)
 ```
 
-## Service Architecture
+## Key source files
 
-```
-[systemd]
-    ↓
-[Go Daemon] ← monitors → [Config File]
-    ↓
-    spawns/monitors
-    ↓
-[Rust Input Hook]
-    ↓
-    uses
-    ↓
-[Rust Core Library]
-```
+### `rust-core/src/hook.rs`
 
-## Configuration Flow
+The core event loop. Responsibilities:
+- `find_keyboard_devices()` — scans `/dev/input/event*`, filters by key support, skips own virtual keyboard
+- `HookState` — holds `word_buffer`, `suggestions`, `pending_word`, shift/caps state
+- `run_stream()` — async loop over `evdev::EventStream` (epoll via `AsyncFd`, zero CPU idle)
+- `on_key()` — dispatches on key code: letters build the buffer, Space triggers correction, Tab/1-5 accept, Backspace restores pending word
+- `VirtualKeyboard` — raw `/dev/uinput` via `libc::ioctl` (no libudev); `press_backspace(n)` + `type_text(s)`
+- `send_to_popup()` — fire-and-forget `spawn_blocking` write to Unix socket
+- `do_learn()` — updates `WordCompleter` and spawns async JSON write
 
-```
-[User edits config via GUI]
-    ↓
-[Saves to ~/.config/smarttype/config.yaml]
-    ↓
-[fsnotify detects change]
-    ↓
-[Go Daemon receives event]
-    ↓
-[Daemon restarts hook with new config]
-    ↓
-[New settings active]
+### `rust-core/src/autocomplete.rs`
+
+`WordCompleter` wraps two stores:
+
+```rust
+words:   BTreeMap<String, u32>   // built-in dictionary + learned, keyed by word
+learned: HashMap<String, u32>    // overlay written to JSON on learn
 ```
 
-## Build Process
+- `suggest(prefix, max)` — `range(prefix..upper_bound)` gives prefix matches in O(log n); topped up with edit-1 results when fewer than `max` found; sorted `(edit_dist ASC, freq DESC)`
+- `correct(word, max)` — for post-space correction; edit-1 always, edit-2 for short words (≤6 chars); only returns dictionary-valid candidates
+- `learn(word)` — increments frequency, returns `(json_snapshot, path)` for async persistence
+- `generate_edit1(word)` — Norvig: all single deletions, transpositions, substitutions, insertions
 
-### 1. Rust Build
+### `rust-core/src/bin/popup.rs`
+
+Borderless X11 window using `x11rb`:
+- `override_redirect = true` — bypasses window manager
+- `reposition()` — `query_pointer` → centre horizontally on cursor, place above cursor with 14px gap; flips below if cursor is <60px from top
+- `render()` — background chip for suggestion #1, colour-coded labels (Catppuccin Mocha palette), accurate vertical text centering from `query_font` metrics
+- Listens on Unix socket; updates on every received message
+
+### `go-daemon/service.go`
+
+- `findBinary(name)` — resolves path via `os.Executable()` directory, `../rust-core/target/release/`, then `/usr/local/bin/`
+- `startHook()` / `startPopup()` — start child, store `*exec.Cmd`, launch monitoring goroutine
+- Monitoring goroutine — calls `cmd.Wait()`, checks `hookStopped` flag, restarts after 2–3s on unexpected exit
+- `Stop()` — sets stopped flags, closes `stopChan`, signals both children, `wg.Wait()`
+- `Reload()` — sets stopped flags → signals old children → sleep 400ms → clears flags → restarts
+
+## Build commands
+
 ```bash
+# Rust
 cd rust-core
-cargo build --release
-# Produces: target/release/smarttype-hook
-#           target/release/libsmarttype_core.so
-```
+cargo build --release        # debug: cargo build
+cargo test                   # run 27 unit tests
 
-### 2. Go Build
-```bash
+# Go
 cd go-daemon
-go mod download
-go build -o smarttype-daemon
-# Produces: smarttype-daemon (single binary)
+go build -o smarttype-daemon .
+go vet ./...
+
+# Both at once
+./scripts/build-all.sh
 ```
 
-### 3. Python Setup
-```bash
-cd python-gui
-pip3 install -r requirements.txt
-chmod +x main.py
-# Makes: main.py executable
-```
+## Runtime files
 
-## Installation Locations
+| Path | Purpose |
+|------|---------|
+| `/dev/input/event*` | Keyboard devices (read by hook) |
+| `/dev/uinput` | Virtual keyboard device (written by hook) |
+| `/tmp/smarttype-popup.sock` | Unix socket between hook and popup |
+| `~/.config/smarttype/config.yaml` | User configuration |
+| `~/.local/share/smarttype/learned_words.json` | Learned word frequencies |
+| `~/.config/systemd/user/smarttype.service` | Systemd unit |
+| `/etc/udev/rules.d/99-smarttype.rules` | Input device permissions |
 
-After installation:
+## Testing
 
-```
-/usr/local/bin/
-├── smarttype-hook        # Rust input hook
-├── smarttype-daemon      # Go daemon
-├── smarttype-config      # Python GUI (symlink to main.py)
-└── smarttype-cli         # CLI wrapper script
-
-/usr/lib/systemd/user/
-└── smarttype.service     # Systemd unit file
-
-/etc/udev/rules.d/
-└── 99-smarttype.rules    # Input device permissions
-
-~/.config/smarttype/
-└── config.yaml           # User configuration
-```
-
-## Key Design Decisions
-
-### Why Rust for Core?
-- Memory safety without garbage collection
-- Near-C performance for real-time input processing
-- Excellent async support with tokio
-- Strong type system prevents bugs
-- Low resource usage (~15-20 MB)
-
-### Why Go for Daemon?
-- Excellent concurrency model (goroutines)
-- Single binary deployment
-- Great stdlib for system operations
-- Fast compilation
-- Easy cross-platform support
-
-### Why Python/Qt for GUI?
-- Rich Qt bindings for professional UI
-- Rapid development
-- Excellent documentation
-- Cross-platform compatibility
-- Easy maintenance
-
-### Why Multiple Languages?
-Each language chosen for its strengths:
-- **Rust**: Performance-critical real-time processing
-- **Go**: Service coordination and concurrency
-- **Python**: Rapid GUI development
-
-This creates a robust, efficient, and maintainable system.
-
-## Security Considerations
-
-### Input Hook Permissions
-The input hook requires elevated privileges:
-- Added to `input` group for device access
-- CAP_DAC_OVERRIDE capability for reading /dev/input/
-- No root privileges during normal operation
-
-### Data Privacy
-- All processing happens locally
-- No network connections
-- No keystroke logging
-- No data sent to external servers
-- Open source for audit
-
-### Sandboxing
-- Each component runs with minimal privileges
-- systemd service isolation
-- Configuration files owned by user
-
-## Testing Strategy
-
-### Unit Tests
-- Rust: `cargo test` in rust-core/
-- Go: `go test ./...` in go-daemon/
-- Python: pytest in python-gui/
-
-### Integration Tests
-- End-to-end autocorrect testing
-- Configuration reload testing
-- Service lifecycle testing
-
-### Manual Testing Checklist
-1. Install on clean system
-2. Test common typos in various apps
-3. Verify smart punctuation
-4. Test configuration changes
-5. Verify service restart
-6. Test permission handling
-
-## Development Workflow
-
-### Setting Up Dev Environment
-```bash
-# Install dependencies
-sudo ./scripts/install-deps.sh
-
-# Build in debug mode
-cd rust-core && cargo build
-cd ../go-daemon && go build
-cd ../python-gui && pip3 install -r requirements.txt
-```
-
-### Making Changes
-
-**Rust Core:**
 ```bash
 cd rust-core
-# Make changes
 cargo test
-cargo build --release
+# 27 tests: autocomplete, engine, dictionary, smart_punctuation, config, lib integration
 ```
 
-**Go Daemon:**
-```bash
-cd go-daemon
-# Make changes
-go test ./...
-go build
-```
-
-**Python GUI:**
-```bash
-cd python-gui
-# Make changes
-python3 main.py  # Test directly
-```
-
-### Contributing
-1. Fork repository
-2. Create feature branch
-3. Make changes with tests
-4. Submit pull request
-
-## Performance Metrics
-
-### Memory Usage
-- Rust core: ~10 MB
-- Go daemon: ~5 MB
-- Python GUI: ~40 MB (when running)
-- **Total runtime**: ~15-20 MB (without GUI)
-
-### CPU Usage
-- Idle: <1%
-- Active typing: <5%
-- Configuration reload: <1% spike
-
-### Latency
-- Dictionary lookup: <1ms
-- Full correction: <2ms
-- Input to output: <5ms total
-
-### Disk Space
-- Binaries: ~15 MB total
-- Source code: ~5 MB
-- Dependencies: ~100 MB during build
-
-## Future Enhancements
-
-### Planned Features
-- [ ] Full Wayland support (native, not XWayland)
-- [ ] Multi-language dictionaries
-- [ ] Machine learning-based corrections
-- [ ] Cloud sync for settings
-- [ ] Mobile app for configuration
-- [ ] Browser extension integration
-- [ ] Context-aware corrections
-- [ ] Correction suggestions UI
-
-### Architecture Improvements
-- [ ] Plugin system for custom dictionaries
-- [ ] REST API for remote configuration
-- [ ] Docker containerization
-- [ ] Snap/Flatpak packaging
-- [ ] AUR package for Arch
-- [ ] GUI in Rust (using egui or gtk-rs)
-
-## Maintenance
-
-### Regular Tasks
-- Update dependencies monthly
-- Review and merge typo corrections
-- Test on new Linux distributions
-- Update documentation
-- Security audits
-
-### Version Releases
-1. Update version in Cargo.toml, go.mod
-2. Update CHANGELOG.md
-3. Tag release in git
-4. Build release binaries
-5. Publish to package managers
-6. Announce on social media
-
-## Resources
-
-### Documentation
-- Rust Book: https://doc.rust-lang.org/book/
-- Go Documentation: https://go.dev/doc/
-- PyQt5 Tutorial: https://www.riverbankcomputing.com/static/Docs/PyQt5/
-- evdev: https://www.freedesktop.org/wiki/Software/libevdev/
-
-### Community
-- GitHub: https://github.com/yourusername/smarttype
-- Discord: https://discord.gg/smarttype
-- Reddit: r/smarttype
-
----
-
-**Last Updated:** 2024
-**Version:** 1.0.0
-**Maintainers:** SmartType Team
+All tests are pure unit tests — no hardware access needed.
