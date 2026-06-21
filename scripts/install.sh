@@ -1,45 +1,108 @@
 #!/usr/bin/env bash
+# SmartType — install script
+# Checks dependencies, builds everything, and installs to /usr/local/bin.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="/usr/local/bin"
+IBUS_COMPONENT_DIR="/usr/share/ibus/component"
 
-# ── Build ─────────────────────────────────────────────────────────────────────
-"$REPO/scripts/build-all.sh"
+# ── 1. Build dependencies ─────────────────────────────────────────────────────
 
-# ── Install binaries ──────────────────────────────────────────────────────────
-echo ""
-echo "==> Installing to $BIN (requires sudo)..."
+echo "==> Checking build dependencies..."
 
-sudo install -Dm755 "$REPO/rust-core/target/release/smarttype-hook"  "$BIN/smarttype-hook"
-sudo install -Dm755 "$REPO/rust-core/target/release/smarttype-popup" "$BIN/smarttype-popup"
-sudo install -Dm755 "$REPO/go-daemon/smarttype-daemon"               "$BIN/smarttype-daemon"
-
-# ── Input-device permissions ──────────────────────────────────────────────────
-echo ""
-echo "==> Setting up permissions..."
-
-# udev rule so /dev/input/event* is readable by the 'input' group
-UDEV_RULE='/etc/udev/rules.d/99-smarttype.rules'
-if [ ! -f "$UDEV_RULE" ]; then
-    sudo tee "$UDEV_RULE" > /dev/null << 'EOF'
-SUBSYSTEM=="input", KERNEL=="event[0-9]*", GROUP="input", MODE="0660"
-EOF
-    sudo udevadm control --reload-rules
-    sudo udevadm trigger
-    echo "  udev rule written: $UDEV_RULE"
-fi
-
-# Add current user to 'input' group so hook can read keyboard events
-TARGET_USER="${SUDO_USER:-$USER}"
-if ! id -nG "$TARGET_USER" | grep -qw input; then
-    sudo usermod -aG input "$TARGET_USER"
-    echo "  Added $TARGET_USER to 'input' group — log out/in for it to take effect."
+# Rust
+if command -v cargo &>/dev/null; then
+    echo "  Rust $(rustc --version) — ok"
 else
-    echo "  $TARGET_USER is already in the 'input' group."
+    echo "  Installing Rust via rustup..."
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+    # shellcheck source=/dev/null
+    source "$HOME/.cargo/env"
 fi
 
-# ── systemd user service ──────────────────────────────────────────────────────
+# Go
+if command -v go &>/dev/null; then
+    echo "  Go $(go version) — ok"
+else
+    echo "  ERROR: Go not found. Install it first:"
+    echo "    sudo apt install golang-go   # Debian/Ubuntu/Kali"
+    echo "    https://go.dev/dl/           # upstream"
+    exit 1
+fi
+
+# System packages (Debian/Ubuntu/Kali)
+if command -v apt-get &>/dev/null; then
+    echo "  Installing system packages..."
+    sudo apt-get update -qq
+    sudo apt-get install -y --no-install-recommends \
+        build-essential \
+        pkg-config \
+        libdbus-1-dev \
+        ibus
+else
+    echo "  Non-Debian system. Ensure you have:"
+    echo "    build-essential / base-devel"
+    echo "    libdbus-1-dev / dbus-devel"
+    echo "    ibus"
+fi
+
+# ── 2. Build ──────────────────────────────────────────────────────────────────
+
+echo ""
+echo "==> Building Rust binary (release)..."
+cd "$REPO/rust-core"
+cargo build --release
+echo "  smarttype-engine — ok"
+
+echo ""
+echo "==> Building Go daemon..."
+cd "$REPO/go-daemon"
+go mod download
+go build -o smarttype-daemon -ldflags="-s -w" -trimpath .
+echo "  smarttype-daemon — ok"
+
+# ── 3. Stop any running instance ─────────────────────────────────────────────
+
+echo ""
+echo "==> Stopping any running SmartType service..."
+systemctl --user stop smarttype.service 2>/dev/null || true
+
+# ── 4. Remove stale binaries from previous installs ──────────────────────────
+
+echo "==> Removing old binaries..."
+sudo rm -f "$BIN/smarttype-hook" "$BIN/smarttype-popup" \
+           "$BIN/smarttype-engine" "$BIN/smarttype-daemon"
+
+# ── 5. Install binaries ───────────────────────────────────────────────────────
+
+echo ""
+echo "==> Installing binaries to $BIN (requires sudo)..."
+
+sudo install -Dm755 "$REPO/rust-core/target/release/smarttype-engine" "$BIN/smarttype-engine"
+sudo install -Dm755 "$REPO/go-daemon/smarttype-daemon"                 "$BIN/smarttype-daemon"
+
+# ── 6. Register IBus engine ───────────────────────────────────────────────────
+
+echo ""
+echo "==> Registering IBus engine..."
+
+sudo install -Dm644 "$REPO/ibus/smarttype.xml" "$IBUS_COMPONENT_DIR/smarttype.xml"
+
+# Patch the exec path in the installed component file to the actual binary
+sudo sed -i "s|<exec>.*</exec>|<exec>$BIN/smarttype-engine</exec>|" \
+    "$IBUS_COMPONENT_DIR/smarttype.xml"
+
+# Rebuild IBus component cache so ibus-daemon sees the new engine
+if command -v ibus &>/dev/null; then
+    ibus write-cache --system 2>/dev/null || true
+    echo "  IBus component cache updated."
+fi
+
+echo "  Restart ibus-daemon and select 'SmartType' in IBus preferences."
+
+# ── 7. Systemd user service ───────────────────────────────────────────────────
+
 echo ""
 echo "==> Installing systemd user service..."
 
@@ -48,7 +111,7 @@ mkdir -p "$SERVICE_DIR"
 
 cat > "$SERVICE_DIR/smarttype.service" << EOF
 [Unit]
-Description=SmartType typing assistant
+Description=SmartType IBus typing assistant
 After=graphical-session.target
 
 [Service]
@@ -56,7 +119,6 @@ Type=simple
 ExecStart=$BIN/smarttype-daemon
 Restart=on-failure
 RestartSec=3
-Environment=DISPLAY=:0
 
 [Install]
 WantedBy=default.target
@@ -64,16 +126,18 @@ EOF
 
 systemctl --user daemon-reload
 systemctl --user enable smarttype.service
-echo "  Service enabled. Start now with: systemctl --user start smarttype"
+systemctl --user start smarttype.service
+echo "  Service enabled and started."
 
 # ── Done ──────────────────────────────────────────────────────────────────────
+
 echo ""
 echo "Installation complete."
 echo ""
-echo "  smarttype-hook    -> $BIN/smarttype-hook"
-echo "  smarttype-popup   -> $BIN/smarttype-popup"
-echo "  smarttype-daemon  -> $BIN/smarttype-daemon"
+echo "  $BIN/smarttype-engine   (IBus engine)"
+echo "  $BIN/smarttype-daemon   (process supervisor)"
+echo "  $IBUS_COMPONENT_DIR/smarttype.xml"
 echo ""
-echo "Quick start:"
-echo "  systemctl --user start smarttype"
-echo "  systemctl --user status smarttype"
+echo "Next steps:"
+echo "  1. Open IBus preferences and enable the 'SmartType' input method."
+echo "  2. journalctl --user -u smarttype -f   (to check logs)"

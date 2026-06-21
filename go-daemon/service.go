@@ -15,18 +15,16 @@ import (
 
 // Service manages the SmartType daemon
 type Service struct {
-	config       *Config
-	configPath   string
-	hookCmd      *exec.Cmd
-	popupCmd     *exec.Cmd
-	hookStopped  bool // true = intentional stop, don't auto-restart
-	popupStopped bool
-	watcher      *fsnotify.Watcher
-	stopChan     chan struct{}
-	wg           sync.WaitGroup
-	mu           sync.RWMutex
-	stats        Stats
-	startTime    time.Time
+	config          *Config
+	configPath      string
+	engineCmd       *exec.Cmd
+	engineStopped   bool // true = intentional stop, don't auto-restart
+	watcher         *fsnotify.Watcher
+	stopChan        chan struct{}
+	wg              sync.WaitGroup
+	mu              sync.RWMutex
+	stats           Stats
+	startTime       time.Time
 }
 
 // Config represents the SmartType configuration
@@ -102,12 +100,8 @@ func (s *Service) Start() error {
 		return fmt.Errorf("failed to setup config watcher: %w", err)
 	}
 
-	if err := s.startPopup(); err != nil {
-		log.Printf("Warning: could not start popup: %v", err)
-	}
-
-	if err := s.startHook(); err != nil {
-		return fmt.Errorf("failed to start input hook: %w", err)
+	if err := s.startEngine(); err != nil {
+		return fmt.Errorf("failed to start IBus engine: %w", err)
 	}
 
 	s.wg.Add(1)
@@ -121,13 +115,9 @@ func (s *Service) Start() error {
 func (s *Service) Stop() {
 	log.Println("Stopping SmartType service...")
 
-	// Mark children as intentionally stopped before closing stopChan,
-	// so that monitoring goroutines don't race to restart them.
 	s.mu.Lock()
-	s.hookStopped = true
-	s.popupStopped = true
-	hookCmd := s.hookCmd
-	popupCmd := s.popupCmd
+	s.engineStopped = true
+	engineCmd := s.engineCmd
 	s.mu.Unlock()
 
 	select {
@@ -136,11 +126,8 @@ func (s *Service) Stop() {
 		close(s.stopChan)
 	}
 
-	if hookCmd != nil && hookCmd.Process != nil {
-		hookCmd.Process.Signal(os.Interrupt)
-	}
-	if popupCmd != nil && popupCmd.Process != nil {
-		popupCmd.Process.Signal(os.Interrupt)
+	if engineCmd != nil && engineCmd.Process != nil {
+		engineCmd.Process.Signal(os.Interrupt)
 	}
 
 	if s.watcher != nil {
@@ -151,7 +138,7 @@ func (s *Service) Stop() {
 	log.Println("SmartType service stopped")
 }
 
-// Reload reloads configuration and restarts child processes
+// Reload reloads configuration and restarts the engine
 func (s *Service) Reload() error {
 	log.Println("Reloading configuration...")
 
@@ -159,35 +146,23 @@ func (s *Service) Reload() error {
 		return fmt.Errorf("failed to reload config: %w", err)
 	}
 
-	// Mark as intentional stop so monitoring goroutines don't restart old instances
 	s.mu.Lock()
-	s.hookStopped = true
-	s.popupStopped = true
-	oldHook := s.hookCmd
-	oldPopup := s.popupCmd
+	s.engineStopped = true
+	oldEngine := s.engineCmd
 	s.mu.Unlock()
 
-	if oldPopup != nil && oldPopup.Process != nil {
-		oldPopup.Process.Signal(os.Interrupt)
-	}
-	if oldHook != nil && oldHook.Process != nil {
-		oldHook.Process.Signal(os.Interrupt)
+	if oldEngine != nil && oldEngine.Process != nil {
+		oldEngine.Process.Signal(os.Interrupt)
 	}
 
-	// Give old processes time to exit cleanly
 	time.Sleep(400 * time.Millisecond)
 
-	// Re-enable auto-restart before launching new instances
 	s.mu.Lock()
-	s.hookStopped = false
-	s.popupStopped = false
+	s.engineStopped = false
 	s.mu.Unlock()
 
-	if err := s.startPopup(); err != nil {
-		log.Printf("Warning: could not restart popup: %v", err)
-	}
-	if err := s.startHook(); err != nil {
-		return fmt.Errorf("failed to restart hook: %w", err)
+	if err := s.startEngine(); err != nil {
+		return fmt.Errorf("failed to restart IBus engine: %w", err)
 	}
 
 	s.mu.Lock()
@@ -198,81 +173,15 @@ func (s *Service) Reload() error {
 	return nil
 }
 
-// startPopup starts (or restarts) the X11 suggestion overlay.
-// It launches a monitoring goroutine that auto-restarts on unexpected exit.
-func (s *Service) startPopup() error {
-	path, err := findBinary("smarttype-popup")
-	if err != nil {
-		return err
-	}
-
-	env := os.Environ()
-	// Ensure DISPLAY is set for X11 popup
-	hasDisplay := false
-	for _, e := range env {
-		if len(e) >= 8 && e[:8] == "DISPLAY=" {
-			hasDisplay = true
-			break
-		}
-	}
-	if !hasDisplay {
-		env = append(env, "DISPLAY=:0")
-	}
-	env = append(env, "RUST_LOG=warn")
-
-	cmd := exec.Command(path)
-	cmd.Env = env
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start popup: %w", err)
-	}
-
-	s.mu.Lock()
-	s.popupCmd = cmd
-	s.mu.Unlock()
-
-	log.Printf("Popup started (PID %d)", cmd.Process.Pid)
-
-	s.wg.Add(1)
-	go func(c *exec.Cmd) {
-		defer s.wg.Done()
-		if err := c.Wait(); err != nil {
-			log.Printf("Popup exited: %v", err)
-		}
-		s.mu.RLock()
-		stopped := s.popupStopped
-		s.mu.RUnlock()
-		if stopped {
-			return
-		}
-		select {
-		case <-s.stopChan:
-			return
-		default:
-			log.Printf("Popup exited unexpectedly, restarting in 3s...")
-			time.Sleep(3 * time.Second)
-			select {
-			case <-s.stopChan:
-			default:
-				if err := s.startPopup(); err != nil {
-					log.Printf("Popup restart failed: %v", err)
-				}
-			}
-		}
-	}(cmd)
-
-	return nil
-}
-
-// startHook starts (or restarts) the input hook process.
-// It launches a monitoring goroutine that auto-restarts on unexpected exit.
-func (s *Service) startHook() error {
+// startEngine starts (or restarts) the IBus engine process.
+// A monitoring goroutine auto-restarts it on unexpected exit.
+func (s *Service) startEngine() error {
 	if !s.config.Enabled {
-		log.Println("SmartType disabled in config, hook not started")
+		log.Println("SmartType disabled in config, engine not started")
 		return nil
 	}
 
-	path, err := findBinary("smarttype-hook")
+	path, err := findBinary("smarttype-engine")
 	if err != nil {
 		return err
 	}
@@ -281,23 +190,23 @@ func (s *Service) startHook() error {
 	cmd.Env = append(os.Environ(), "RUST_LOG=info")
 
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start hook: %w", err)
+		return fmt.Errorf("start engine: %w", err)
 	}
 
 	s.mu.Lock()
-	s.hookCmd = cmd
+	s.engineCmd = cmd
 	s.mu.Unlock()
 
-	log.Printf("Hook started (PID %d)", cmd.Process.Pid)
+	log.Printf("Engine started (PID %d)", cmd.Process.Pid)
 
 	s.wg.Add(1)
 	go func(c *exec.Cmd) {
 		defer s.wg.Done()
 		if err := c.Wait(); err != nil {
-			log.Printf("Hook exited: %v", err)
+			log.Printf("Engine exited: %v", err)
 		}
 		s.mu.RLock()
-		stopped := s.hookStopped
+		stopped := s.engineStopped
 		s.mu.RUnlock()
 		if stopped {
 			return
@@ -306,13 +215,13 @@ func (s *Service) startHook() error {
 		case <-s.stopChan:
 			return
 		default:
-			log.Printf("Hook exited unexpectedly, restarting in 2s...")
+			log.Printf("Engine exited unexpectedly, restarting in 2s...")
 			time.Sleep(2 * time.Second)
 			select {
 			case <-s.stopChan:
 			default:
-				if err := s.startHook(); err != nil {
-					log.Printf("Hook restart failed: %v", err)
+				if err := s.startEngine(); err != nil {
+					log.Printf("Engine restart failed: %v", err)
 				}
 			}
 		}

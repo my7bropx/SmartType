@@ -2,7 +2,6 @@ pub mod engine;
 pub mod dictionary;
 pub mod smart_punctuation;
 pub mod config;
-pub mod hook;
 pub mod autocomplete;
 
 pub use engine::AutocorrectEngine;

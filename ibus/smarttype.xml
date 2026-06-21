@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<component>
+  <name>org.freedesktop.IBus.SmartType</name>
+  <description>SmartType autocomplete and autocorrect engine</description>
+  <exec>/usr/local/bin/smarttype-engine</exec>
+  <version>1.0.0</version>
+  <author>SmartType Contributors</author>
+  <license>MIT</license>
+  <homepage></homepage>
+  <textdomain>smarttype</textdomain>
+  <engines>
+    <engine>
+      <name>smarttype</name>
+      <language>en</language>
+      <license>MIT</license>
+      <author>SmartType Contributors</author>
+      <icon></icon>
+      <longname>SmartType</longname>
+      <description>Inline autocomplete and autocorrect for English text</description>
+      <rank>0</rank>
+      <hotkeys></hotkeys>
+      <symbol>ST</symbol>
+      <setup></setup>
+      <layout>us</layout>
+    </engine>
+  </engines>
+</component>

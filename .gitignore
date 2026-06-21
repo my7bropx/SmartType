@@ -1,17 +1,8 @@
 # Rust
 rust-core/target/
-rust-core/Cargo.lock
 
 # Go
 go-daemon/smarttype-daemon
-go-daemon/go.sum
-
-# Python
-python-gui/__pycache__/
-python-gui/*.pyc
-python-gui/.pytest_cache/
-python-gui/venv/
-python-gui/.env
 
 # IDE
 .vscode/
@@ -24,17 +15,8 @@ python-gui/.env
 .DS_Store
 Thumbs.db
 
-# Build artifacts
-*.o
-*.a
-*.so
-*.dylib
-*.dll
-
-# Configuration
-config/local.yaml
+# Logs
 *.log
 
-# Test files
+# Test artifacts
 test-output/
-*.claude/*
