@@ -284,9 +284,10 @@ impl WordCompleter {
 
 fn sort_candidates(candidates: &mut Vec<(String, u32, u8)>) {
     candidates.sort_by(|a, b| {
-        a.2.cmp(&b.2)
-            .then_with(|| b.1.cmp(&a.1))
-            .then_with(|| a.0.cmp(&b.0))
+        a.2.cmp(&b.2) // prefix matches (tier 0) before edit-distance (1, 2)
+            .then_with(|| b.1.cmp(&a.1)) // higher frequency first
+            .then_with(|| a.0.len().cmp(&b.0.len())) // shorter root word first
+            .then_with(|| a.0.cmp(&b.0)) // stable alphabetical fallback
     });
 }
 

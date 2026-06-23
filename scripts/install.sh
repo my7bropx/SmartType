@@ -39,6 +39,7 @@ if command -v apt-get &>/dev/null; then
         build-essential \
         pkg-config \
         libdbus-1-dev \
+        libayatana-appindicator3-dev \
         ibus
 else
     echo "  Non-Debian system. Ensure you have:"
@@ -67,12 +68,28 @@ echo "  smarttype-daemon — ok"
 echo ""
 echo "==> Stopping any running SmartType service..."
 systemctl --user stop smarttype.service 2>/dev/null || true
+systemctl --user disable smarttype.service 2>/dev/null || true
+# Kill any stray daemon/engine left running outside systemd so the binaries are
+# not held open (avoids "Text file busy" when we replace them below).
+pkill -x smarttype-daemon 2>/dev/null || true
+pkill -x smarttype-engine 2>/dev/null || true
+sleep 1
 
-# ── 4. Remove stale binaries from previous installs ──────────────────────────
+# ── 4. Remove stale files from previous installs ─────────────────────────────
 
-echo "==> Removing old binaries..."
+echo "==> Removing old files..."
+# Old binaries (including the retired evdev hook + X11 popup from the pre-IBus design).
+# Unlinking the directory entry frees it even if an old copy is still running.
 sudo rm -f "$BIN/smarttype-hook" "$BIN/smarttype-popup" \
            "$BIN/smarttype-engine" "$BIN/smarttype-daemon"
+# Stale binaries from any earlier ~/.local/bin install.
+rm -f "$HOME/.local/bin/smarttype-engine" "$HOME/.local/bin/smarttype-daemon" 2>/dev/null || true
+# Old IBus component descriptor and stale component cache.
+sudo rm -f "$IBUS_COMPONENT_DIR/smarttype.xml"
+rm -f "$HOME/.cache/ibus/bus/registry/"* 2>/dev/null || true
+# Old systemd user unit (rewritten fresh in step 7).
+rm -f "$HOME/.config/systemd/user/smarttype.service"
+systemctl --user daemon-reload 2>/dev/null || true
 
 # ── 5. Install binaries ───────────────────────────────────────────────────────
 

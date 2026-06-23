@@ -7,19 +7,20 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
-	"github.com/sevlyar/go-daemon"
+	"github.com/getlantern/systray"
+	daemon "github.com/sevlyar/go-daemon"
 )
 
 var (
-	signal_flag = flag.String("s", "", "send signal to daemon (stop, reload)")
-	daemonize   = flag.Bool("d", false, "run as daemon")
+	signalFlag = flag.String("s", "", "send signal to daemon (stop, reload)")
+	daemonize  = flag.Bool("d", false, "run as daemon")
 )
 
 func main() {
 	flag.Parse()
 
-	// Setup daemon context
 	cntxt := &daemon.Context{
 		PidFileName: "/tmp/smarttype.pid",
 		PidFilePerm: 0644,
@@ -29,33 +30,33 @@ func main() {
 		Umask:       027,
 	}
 
-	// Handle signals
-	if len(*signal_flag) > 0 {
-		daemon_process, err := cntxt.Search()
+	// Signal-forwarding mode: send a control signal to the running daemon.
+	if len(*signalFlag) > 0 {
+		d, err := cntxt.Search()
 		if err != nil {
-			log.Fatalf("Unable to send signal to daemon: %s", err.Error())
+			log.Fatalf("Cannot find daemon: %s", err)
 		}
-
-		switch *signal_flag {
+		switch *signalFlag {
 		case "stop":
-			daemon_process.Signal(syscall.SIGTERM)
-			fmt.Println("SmartType daemon stopped")
+			d.Signal(syscall.SIGTERM)
+			fmt.Println("SmartType stopped")
 		case "reload":
-			daemon_process.Signal(syscall.SIGHUP)
-			fmt.Println("SmartType daemon reloaded")
+			d.Signal(syscall.SIGHUP)
+			fmt.Println("SmartType config reloaded")
 		default:
-			fmt.Println("Unknown signal:", *signal_flag)
+			fmt.Println("Unknown signal:", *signalFlag)
 		}
 		return
 	}
 
-	// Run as daemon if requested
+	// Daemonize if requested.
 	if *daemonize {
 		d, err := cntxt.Reborn()
 		if err != nil {
-			log.Fatal("Unable to run as daemon: ", err)
+			log.Fatal("Cannot daemonize: ", err)
 		}
 		if d != nil {
+			// Parent process — child has forked; parent exits.
 			return
 		}
 		defer cntxt.Release()
@@ -63,29 +64,69 @@ func main() {
 
 	log.Println("SmartType daemon starting...")
 
-	// Run service
+	// systray.Run must own the main goroutine (GTK/AppIndicator requirement).
+	// All startup logic lives in onReady; shutdown in onExit.
+	systray.Run(onReady, onExit)
+}
+
+func onReady() {
+	systray.SetTitle("SmartType")
+	systray.SetTooltip("SmartType — autocomplete active")
+	// The AppIndicator GTK widget isn't ready at onReady entry time.
+	// Delay the SetIcon call so GTK can finish initializing the widget,
+	// otherwise gtk_widget_get_scale_factor asserts and the icon is skipped.
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		systray.SetIcon(makeIcon())
+	}()
+
+	mStatus := systray.AddMenuItem("SmartType", "Typing assistant")
+	mStatus.Disable()
+	systray.AddSeparator()
+	mReload := systray.AddMenuItem("Reload Config", "Re-read ~/.config/smarttype/config.yaml")
+	systray.AddSeparator()
+	mQuit := systray.AddMenuItem("Quit SmartType", "")
+
 	service := NewService()
 	if err := service.Start(); err != nil {
-		log.Fatal("Failed to start service: ", err)
+		log.Fatalf("Failed to start service: %v", err)
 	}
+	log.Println("SmartType running")
 
-	// Setup signal handling
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
-	// Main loop
-	for {
-		sig := <-sigChan
-		switch sig {
-		case syscall.SIGTERM, syscall.SIGINT:
-			log.Println("Received termination signal, shutting down...")
-			service.Stop()
-			return
-		case syscall.SIGHUP:
-			log.Println("Received reload signal, reloading configuration...")
-			if err := service.Reload(); err != nil {
-				log.Printf("Error reloading: %v", err)
+	go func() {
+		for {
+			select {
+			case sig := <-sigChan:
+				switch sig {
+				case syscall.SIGTERM, syscall.SIGINT:
+					log.Println("Shutdown signal received")
+					service.Stop()
+					systray.Quit()
+					return
+				case syscall.SIGHUP:
+					log.Println("Reloading config...")
+					if err := service.Reload(); err != nil {
+						log.Printf("Reload error: %v", err)
+					}
+				}
+			case <-mReload.ClickedCh:
+				log.Println("Reload requested from tray")
+				if err := service.Reload(); err != nil {
+					log.Printf("Reload error: %v", err)
+				}
+			case <-mQuit.ClickedCh:
+				log.Println("Quit from tray")
+				service.Stop()
+				systray.Quit()
+				return
 			}
 		}
-	}
+	}()
+}
+
+func onExit() {
+	log.Println("SmartType stopped")
 }
